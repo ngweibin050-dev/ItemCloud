@@ -6,7 +6,12 @@
     "users": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
-        ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'info.itemcloud@gmail.com')"
+        /* role is mirrored from Firestore by the mirrorUserRole Cloud Function only.
+           Admin-only paths below trust it, so no client may write it. */
+        "role": { ".write": false },
+        "$field": {
+          ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'info.itemcloud@gmail.com')"
+        }
       }
     },
 

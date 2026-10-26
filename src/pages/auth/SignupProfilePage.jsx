@@ -6,6 +6,7 @@ import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { requestVerifyEmail } from '../../services/verifyApi';
 import { sendVerifyEmail } from '../../lib/emailjsClient';
+import { checkMatricCard } from '../../services/ocrApi';
 
 const CLOUD_NAME = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
 const PRESET = import.meta.env.VITE_CLOUDINARY_PRESET;
@@ -22,7 +23,10 @@ export default function SignupProfilePage() {
   });
   const [matricFile, setMatricFile] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState('');
   const [err, setErr] = useState('');
+  const [ocrWarning, setOcrWarning] = useState(null); // OCR result awaiting the user's confirmation
+  const [confirmedMismatch, setConfirmedMismatch] = useState(false);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => {
@@ -32,7 +36,14 @@ export default function SignupProfilePage() {
     return () => unsub();
   }, [nav]);
 
-  const setField = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  const setField = (k) => (e) => {
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+    // Editing the name or matric number means the card must be checked again.
+    if (k === 'matricNo' || k === 'fullName') {
+      setOcrWarning((w) => (w ? { matricUrl: w.matricUrl } : w));
+      setConfirmedMismatch(false);
+    }
+  };
 
   async function uploadMatricCard(file) {
     if (!file) throw new Error('Please upload your matric card image.');
@@ -55,10 +66,24 @@ export default function SignupProfilePage() {
     setLoading(true);
 
     try {
-      // 1) Upload matric card to Cloudinary (unsigned)
-      const matricUrl = await uploadMatricCard(matricFile);
+      // 1) Upload matric card to Cloudinary (unsigned), unless already uploaded on a previous try
+      setStep('Uploading matric card…');
+      const matricUrl = ocrWarning?.matricUrl || (await uploadMatricCard(matricFile));
 
-      // 2) Save profile to Firestore with image URL
+      // 2) OCR the card and check the typed matric number and name appear on it.
+      //    The result never blocks sign-up; the backend saves it to MatricChecks/{uid} for admins.
+      let matricOcr = ocrWarning?.result;
+      if (!matricOcr) {
+        setStep('Checking your matric card…');
+        matricOcr = await checkMatricCard({ imageUrl: matricUrl, matricNo: form.matricNo, fullName: form.fullName });
+        if (['mismatch', 'partial', 'unreadable'].includes(matricOcr.verdict) && !confirmedMismatch) {
+          setOcrWarning({ matricUrl, result: matricOcr });
+          return; // let the student fix a typo or confirm
+        }
+      }
+
+      // 3) Save profile to Firestore with image URL (the backend stores the OCR result in MatricChecks)
+      setStep('Saving profile…');
       await setDoc(
         doc(db, 'Users', uid),
         {
@@ -72,10 +97,10 @@ export default function SignupProfilePage() {
         { merge: true }
       );
 
-      // 3) Get Firebase verify link from your backend
+      // 4) Get Firebase verify link from your backend
       const { link, to, name } = await requestVerifyEmail();
 
-      // 4) Send the email via EmailJS (client-side)
+      // 5) Send the email via EmailJS (client-side)
       await sendVerifyEmail({
         to_email: to || auth.currentUser?.email,
         to_name: name || form.fullName || 'there',
@@ -83,7 +108,7 @@ export default function SignupProfilePage() {
         verification_url: link,
       });
 
-      // 5) Sign out and show the verify screen
+      // 6) Sign out and show the verify screen
       await signOut(auth);
       nav('/verify-email', { replace: true });
     } catch (e) {
@@ -91,6 +116,7 @@ export default function SignupProfilePage() {
       setErr(e?.message || 'Failed to complete signup.');
     } finally {
       setLoading(false);
+      setStep('');
     }
   };
 
@@ -110,14 +136,45 @@ export default function SignupProfilePage() {
           type="file"
           accept="image/*"
           capture="environment"
-          onChange={(e) => setMatricFile(e.target.files?.[0] || null)}
+          onChange={(e) => {
+            setMatricFile(e.target.files?.[0] || null);
+            setOcrWarning(null); // new photo: upload and check again
+            setConfirmedMismatch(false);
+          }}
           required
           className="px-3 py-2 rounded-lg border dark:bg-slate-800"
         />
 
+        {ocrWarning?.result && (
+          <div className="text-sm rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-900/20 p-3">
+            {ocrWarning.result.verdict === 'unreadable' ? (
+              <>
+                <p className="font-medium">We couldn't read your matric card photo.</p>
+                <p className="mt-1">Try a sharper, well-lit photo, or continue and an admin will review it.</p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium">We couldn't fully match your details to the card photo.</p>
+                <p className="mt-1">
+                  {ocrWarning.result.matricNoMatch ? 'Matric number found. ' : 'Matric number not found on the card. '}
+                  {ocrWarning.result.nameScore >= 0.5 ? 'Name found.' : 'Name not found on the card.'}
+                </p>
+                <p className="mt-1">Check for typos, or continue and an admin will review your card.</p>
+              </>
+            )}
+            <label className="mt-2 flex items-center gap-2">
+              <input type="checkbox" checked={confirmedMismatch} onChange={(e) => setConfirmedMismatch(e.target.checked)} />
+              My details are correct, continue anyway
+            </label>
+          </div>
+        )}
+
         {err && <div className="text-sm text-red-500">{err}</div>}
-        <button disabled={loading} className="w-full bg-brand-500 hover:bg-brand-600 text-white rounded-lg px-3 py-2">
-          {loading ? 'Submitting…' : 'Finish & Verify Email'}
+        <button
+          disabled={loading || (ocrWarning?.result && !confirmedMismatch)}
+          className="w-full bg-brand-500 hover:bg-brand-600 disabled:opacity-60 text-white rounded-lg px-3 py-2"
+        >
+          {loading ? step || 'Submitting…' : 'Finish & Verify Email'}
         </button>
       </form>
     </div>

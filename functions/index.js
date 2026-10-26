@@ -4,6 +4,7 @@
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
+const { onDocumentWritten } = require("firebase-functions/v2/firestore");
 const admin = require("firebase-admin");
 admin.initializeApp();
 
@@ -80,5 +81,19 @@ exports.expireCodes = onSchedule(
     });
 
     if (Object.keys(updates).length) await rtdb.ref().update(updates);
+  }
+);
+
+// Firestore Users/{uid}.role -> RTDB /users/{uid}/role (server only).
+// RTDB rules read this mirror for admin-only paths, so clients must never write it.
+exports.mirrorUserRole = onDocumentWritten(
+  { document: "Users/{uid}", region: REGION },
+  async (event) => {
+    const uid = event.params.uid;
+    const after = event.data.after.exists ? event.data.after.data() : null;
+    const before = event.data.before.exists ? event.data.before.data() : null;
+    const role = after ? after.role || "user" : null;
+    if (before && after && (before.role || "user") === role) return;
+    await rtdb.ref(`users/${uid}/role`).set(role);
   }
 );

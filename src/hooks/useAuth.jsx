@@ -30,7 +30,6 @@ export function AuthProvider({ children }) {
       const userRef = doc(db, 'Users', u.uid);
 
       // Ensure a minimal profile exists
-      let firstRole = 'user';
       try {
         const firstSnap = await getDoc(userRef);
         if (!firstSnap.exists()) {
@@ -40,12 +39,9 @@ export function AuthProvider({ children }) {
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           }, { merge: true });
-        } else {
-          firstRole = firstSnap.data()?.role || 'user';
         }
-        // Mirror to RTDB (so RTDB rules can check /users/{uid}/role)
+        // Role is mirrored to RTDB by the mirrorUserRole Cloud Function; clients may not write it.
         await rUpdate(rRef(rtdb, `users/${u.uid}`), {
-          role: firstRole,
           email: u.email ?? null,
           syncedAt: Date.now(),
         });
@@ -63,7 +59,6 @@ export function AuthProvider({ children }) {
 
           if (data?.role) {
             rUpdate(rRef(rtdb, `users/${u.uid}`), {
-              role: data.role,
               email: u.email ?? null,
               syncedAt: Date.now(),
             }).catch(() => {});

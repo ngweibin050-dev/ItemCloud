@@ -28,13 +28,30 @@ service cloud.firestore {
 
     /* -------- Users -------- */
     match /Users/{uid} {
-      allow read, update: if isSelf(uid) || isAdmin();
-      allow create: if (isSelf(uid) && request.resource.data.matricUrl is string) || isAdmin();
+      allow read: if isSelf(uid) || isAdmin();
+      // Users may create their own profile, but only as a normal user with pending verification.
+      allow create: if isAdmin() || (
+        isSelf(uid) &&
+        request.resource.data.matricUrl is string &&
+        request.resource.data.get('role', 'user') == 'user' &&
+        request.resource.data.get('verification', {'status': 'pending'}).status == 'pending'
+      );
+      // Users may edit their profile but never their own role or verification status.
+      allow update: if isAdmin() || (
+        isSelf(uid) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'verification'])
+      );
       allow delete: if isAdmin();
 
       match /settings/{doc} {
         allow read, write: if isSelf(uid) || isAdmin();
       }
+    }
+
+    /* -------- MatricChecks: OCR results written only by the backend -------- */
+    match /MatricChecks/{uid} {
+      allow read: if isSelf(uid) || isAdmin();
+      allow write: if false;
     }
 
     /* -------- LostItems (allow ESP32-CAM anonymous snapshots) -------- */

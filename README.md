@@ -43,6 +43,7 @@ Admins can send a remote override unlock of 1–30 seconds, post updates, review
 | Claim an item and get a time-limited unlock code | Remote override unlock |
 | Unlock by keypad or QR scan | Post updates, review profile edit requests and student reports |
 | Claim history and in-app notifications | Export records to Excel |
+| Matric card check at sign-up (OCR) | |
 | English / Malay interface | |
 
 ## Hardware
@@ -74,6 +75,8 @@ Firmware details:
   - Admin action logs cannot be edited or deleted.
 - **Realtime Database rules** ([`firebase/database.rules.json`](firebase/database.rules.json)) validate unlock-code format (`^[0-9A-D]{8}$`), attempt IDs and statuses, and cap admin override unlocks at 30 seconds.
 - **Signed uploads:** the Cloudinary API secret stays inside the Apps Script signer, never on the device.
+- **No self-promotion to admin:** users cannot set or change their own `role` or `verification`. The admin role is mirrored to the Realtime Database only by a Cloud Function (`mirrorUserRole`), and clients cannot write that mirror, which guards the admin override-unlock path.
+- **Matric card OCR at sign-up:** the backend reads the uploaded card with Tesseract.js and checks the typed matric number and name against it. The verdict is stored server-side in `MatricChecks/{uid}` (read-only for clients) for admins to review. See [ItemCloud-Backend](https://github.com/ngweibin050-dev/ItemCloud-Backend#matric-card-ocr).
 - **Credentials** are kept out of source code: the website reads `VITE_*` environment variables and the firmware reads a git-ignored `secrets.h`.
 
 ## Tech stack
@@ -81,7 +84,7 @@ Firmware details:
 | Layer | Technology |
 | --- | --- |
 | Website | React 19, Vite, Tailwind CSS, React Router, Recharts, i18next, html5-qrcode, SheetJS |
-| Backend | Firebase Auth, Firestore, Realtime Database, Cloud Functions (Node 20), Firebase Hosting; Vercel serverless API ([ItemCloud-Backend](https://github.com/ngweibin050-dev/ItemCloud-Backend)) |
+| Backend | Tesseract.js OCR, Firebase Auth, Firestore, Realtime Database, Cloud Functions (Node 20), Firebase Hosting; Vercel serverless API ([ItemCloud-Backend](https://github.com/ngweibin050-dev/ItemCloud-Backend)) |
 | Media and email | Cloudinary (signed uploads via Google Apps Script), EmailJS |
 | Firmware | Arduino C++ on ESP32 / ESP32-CAM, Firebase ESP Client, I2CKeyPad, mDNS |
 
@@ -92,11 +95,10 @@ src/
   pages/          Home, Lost Items, Claim History, Scan & Claim, Dashboard, Admin, auth flow
   components/     item cards, unlock modal, QR scanner, charts/
   services/       Firestore, Realtime Database, claims, notifications, admin
-functions/        Cloud Functions: claim finalisation, code expiry
-documentation/
-  firmware/         ESP32 central controller and ESP32-CAM sketches
-  firebase/         Firestore rules, Realtime Database rules, index definitions
-  docs/             circuit diagram
+functions/        Cloud Functions: claim finalisation, code expiry, role mirror
+firmware/         ESP32 central controller and ESP32-CAM sketches
+firebase/         Firestore rules, Realtime Database rules, index definitions
+docs/             circuit diagram
 ```
 
 ## Run it locally
@@ -127,7 +129,7 @@ Environment variables: `VITE_API_BASE_URL`, `VITE_CLOUDINARY_CLOUD_NAME`, `VITE_
 
 - One central controller serves two boxes; more boxes need another controller or more I/O.
 - The ultrasonic sensor can miss flat or soft items lying below the beam.
-- An OCR endpoint for reading student matric cards (Tesseract.js) exists in the backend but is not yet connected to sign-up.
+- The matric card check flags accounts for admin review; it cannot prove the photo belongs to the person signing up.
 
 ## Team
 
