@@ -133,9 +133,12 @@ Environment variables: `VITE_API_BASE_URL`, `VITE_CLOUDINARY_CLOUD_NAME`, `VITE_
 
 ## Team
 
-Built by a team of six for ICIIC 2026 (Higher Institution Student category).
-
-**My contribution (Ng Wei Bin):** _add the parts you built here, e.g. website, Firebase rules, ESP32 firmware._
+Built by a team of five for ICIIC 2026 (Higher Institution Student category).
+- Ng Wei Bin
+- Amree Asyraf
+- Imaduddin
+- Zafran
+- Amir Mujahid
 
 ## License
 
