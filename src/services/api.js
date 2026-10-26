@@ -8,12 +8,11 @@ import { auth, db, rtdb } from './firebase';
 import {
   collection, getDocs, orderBy, where, query, limit,
 } from 'firebase/firestore';
-import { markExpiredIfNeeded } from './rtdb'; // you already have this helper in rtdb.js
+import { markExpiredIfNeeded } from './rtdb';
 import {
   ref as rRef,
   runTransaction as rRunTx,
   onValue, off, get as rGet, update as rUpdate,
-  set as rSet,
 } from 'firebase/database';
 import {
   nextClaimId,
@@ -33,7 +32,6 @@ export async function fetchLostItems() {
   return snap.docs.map(d => ({
     id: d.id,
     ...d.data(),
-    // normalize in case some docs use "box" instead of "boxId"
     boxId: d.data().boxId || d.data().box || '',
   }));
 }
@@ -43,7 +41,6 @@ export function subscribeUnlockCode(boxId, cb) {
   const node = rRef(rtdb, `UnlockCodes/${boxId}`);
   const unsub = onValue(node, (s) => {
     const v = s.val() || {};
-    // Normalize device values; treat 'used' as 'successful'
     const status =
       (v.status === 'successful' || v.status === 'used')
         ? 'successful'
@@ -55,7 +52,7 @@ export function subscribeUnlockCode(boxId, cb) {
 
 // Utility: secure-ish 8-char uppercase code
 function makeCode(n = 8) {
-  const ABC = '0123456789ABCD'; // only digits and A-D to avoid confusion
+  const ABC = '0123456789ABCD';
   let out = '';
   for (let i = 0; i < n; i++) out += ABC[Math.floor(Math.random() * ABC.length)];
   return out;
@@ -68,28 +65,45 @@ async function writeCodeNodeTx({ boxId, attemptId, itemID, code, expiresAtMs }) 
 
   const result = await rRunTx(node, (cur) => {
     cur = cur || {};
-    if (cur.status === 'pending' && cur.attemptId && cur.attemptId !== attemptId) {
-      return; // abort tx
+    
+    // ✅ Allow if:
+    // - No existing session, OR
+    // - Existing session is NOT pending, OR
+    // - Same attemptId (reusing), OR
+    // - Same user (reopen their own session)
+    const canWrite = 
+      !cur.status || 
+      cur.status !== 'pending' ||
+      cur.attemptId === attemptId ||
+      cur.byUid === byUid;
+    
+    if (!canWrite) {
+      // Block ONLY if it's a different user's pending session
+      return; // abort transaction
     }
-    // Build fresh payload; DO NOT carry forward expiredAtMs/cancelledAtMs
+    
     return {
-      // identity
       boxId,
       itemID,
       attemptId,
       byUid,
-
-      // new code window
       code,
       status: 'pending',
       startedAtMs: Date.now(),
       expiresAtMs,
-
-      // explicitly clear stale fields
       expiredAtMs: null,
       cancelledAtMs: null,
       liveInput: '',
       liveInputAtMs: null,
+      unlockRequest: {
+        method: '',
+        requestedAt: 0,
+        triggered: false,
+        processedAt: 0
+      },
+      unlockAttempts: 0,
+      lastUnlockMethod: '',
+      lastUnlockAt: 0
     };
   }, { applyLocally: false });
 
@@ -112,10 +126,8 @@ async function writeCodeNodeTx({ boxId, attemptId, itemID, code, expiresAtMs }) 
 
 // Public: request NEW code for this item/box; creates AllClaims with Cxxxx
 export async function requestUnlockCode(itemID, boxId) {
-  // 1) allocate sequential claim id
   const attemptId = await nextClaimId();
 
-  // 2) create AllClaims/<Cxxxx> (pending, no code yet)
   await createAllClaimPending({
     claimId: attemptId,
     uid: auth.currentUser?.uid || 'anon',
@@ -123,18 +135,48 @@ export async function requestUnlockCode(itemID, boxId) {
     itemID,
   });
 
-  // 3) write RTDB atomically (avoid duplicates)
   const code = makeCode(8);
   const expiresAtMs = Date.now() + 5 * 60 * 1000;
   const payload = await writeCodeNodeTx({ boxId, attemptId, itemID, code, expiresAtMs });
 
-  // ✅ 4) NOW mirror code + expiry into AllClaims (the initial create didn't have them)
   await updateAllClaimStatus(attemptId, 'pending', { code, expiresAtMs });
 
   return payload;
 }
 
-// Public: cancel current code (keeps the attempt; page will mark AllClaims)
+// Public: request unlock code or reuse if user already has one
+export async function requestOrReuseUnlockCode(itemID, boxId) {
+  const currentUserId = auth.currentUser?.uid;
+  
+  // 1. Check if there's an existing pending session for this box
+  const existingSession = await readBoxUnlockNode(boxId);
+  
+  console.log('🔍 Checking existing session:', existingSession);
+  
+  // 2. If user already has a pending session, reuse it
+  if (
+    existingSession && 
+    existingSession.byUid === currentUserId && 
+    existingSession.status === 'pending' &&
+    Date.now() < existingSession.expiresAtMs
+  ) {
+    console.log('♻️ Reusing existing session for same user');
+    return {
+      boxId: existingSession.boxId,
+      itemID: existingSession.itemID,
+      code: existingSession.code,
+      expiresAtMs: existingSession.expiresAtMs,
+      attemptId: existingSession.attemptId,
+      reused: true // Flag to indicate this is reused
+    };
+  }
+  
+  // 3. Otherwise, create new session
+  console.log('🆕 Creating new unlock session');
+  return await requestUnlockCode(itemID, boxId);
+}
+
+// Public: cancel current code
 export async function cancelUnlockCode(boxId) {
   await rUpdate(rRef(rtdb, `UnlockCodes/${boxId}`), {
     status: 'cancelled',
@@ -146,20 +188,19 @@ export async function cancelUnlockCode(boxId) {
   });
 }
 
-// Public: resend code for same attempt (flip back to pending)
+// Public: resend code
 export async function resendUnlockCode(itemID, boxId, attemptId) {
   const code = makeCode(8);
   const expiresAtMs = Date.now() + 5 * 60 * 1000;
 
   if (attemptId) {
-    await updateAllClaimStatus(attemptId, 'pending'); // flip status back
+    await updateAllClaimStatus(attemptId, 'pending');
   }
   return await writeCodeNodeTx({ boxId, attemptId, itemID, code, expiresAtMs });
 }
 
-// Public: mark expired in BOTH RTDB and AllClaims
+// Public: mark expired
 export async function expireUnlockCode(boxId, attemptId) {
-  // RTDB
   await rUpdate(rRef(rtdb, `UnlockCodes/${boxId}`), {
     status: 'expired',
     expiredAtMs: Date.now(),
@@ -168,22 +209,21 @@ export async function expireUnlockCode(boxId, attemptId) {
     status: 'expired',
     atMs: Date.now(),
   });
-  // Firestore (audit trail)
   if (attemptId) {
     await updateAllClaimStatus(attemptId, 'expired', { reason: 'timeout' });
   }
 }
 
-// Convenience: single read (for debugging/tools)
+// Convenience: single read
 export async function readBoxUnlockNode(boxId) {
   const s = await rGet(rRef(rtdb, `UnlockCodes/${boxId}`));
   return { boxId, ...(s.val() || {}) };
 }
 
-// NEW: reconcile one box (free, client-only)
+// NEW: reconcile one box
 export async function reconcileBox(boxId) {
   try { await markExpiredIfNeeded({ box: boxId }); } catch {}
-  const node = await readBoxUnlockNode(boxId);       // { attemptId, status, ... }
+  const node = await readBoxUnlockNode(boxId);
   const id = node.attemptId;
   if (!id) return;
   if (node.status === 'successful' || node.status === 'used') {
@@ -200,20 +240,101 @@ export async function reconcileBox(boxId) {
 }
 
 /**
- * Verify an unlock code by scanning UnlockCodes/* nodes and returning the matching node.
- * Returns { ok: true, attemptId, itemId, boxId, status } or { ok: false }.
- *
- * NOTE: This reads the entire UnlockCodes node once client-side. For production use a
- * secure server endpoint or Cloud Function that validates the code and returns the attemptId.
+ * Validate and trigger QR unlock
+ * Sets unlock request in RTDB, ESP32 will detect and unlock
+ * No need to wait for ESP32 confirmation
+ */
+export async function validateAndUnlockQR(scannedBoxId) {
+  const currentUserId = auth.currentUser?.uid;
+  
+  console.log('🔍 validateAndUnlockQR called with boxId:', scannedBoxId);
+  console.log('🔍 Current user ID:', currentUserId);
+  
+  if (!currentUserId) {
+    const err = new Error('You must be logged in to unlock');
+    err.code = 'NOT_AUTHENTICATED';
+    throw err;
+  }
+  
+  if (!scannedBoxId) {
+    const err = new Error('Invalid QR code - no box ID found');
+    err.code = 'INVALID_QR';
+    throw err;
+  }
+  
+  // 1. Get unlock session from RTDB
+  const snap = await rGet(rRef(rtdb, `UnlockCodes/${scannedBoxId}`));
+  const session = snap.val();
+  
+  console.log('🔍 Session data:', session);
+  
+  // 2. Validation checks
+  if (!session) {
+    const err = new Error('No active unlock session found for this box');
+    err.code = 'NO_SESSION';
+    throw err;
+  }
+  
+  if (session.byUid !== currentUserId) {
+    const err = new Error('This unlock session belongs to another user. Please claim your own item first.');
+    err.code = 'WRONG_USER';
+    throw err;
+  }
+  
+  if (session.status !== 'pending') {
+    const err = new Error(`Cannot unlock: session is ${session.status}`);
+    err.code = 'INVALID_STATUS';
+    throw err;
+  }
+  
+  if (Date.now() >= session.expiresAtMs) {
+    const err = new Error('This unlock session has expired. Please request a new code.');
+    err.code = 'EXPIRED';
+    throw err;
+  }
+  
+  console.log('✅ All validations passed');
+  
+  // 3. Update RTDB - Set unlock request and status
+  const now = Date.now();
+  
+  try {
+    await rUpdate(rRef(rtdb, `UnlockCodes/${scannedBoxId}`), {
+      status: 'successful',
+      'unlockRequest/method': 'qr_scan',
+      'unlockRequest/requestedAt': now,
+      'unlockRequest/triggered': true,
+      'unlockRequest/processedAt': 0,
+      lastUnlockMethod: 'qr_scan',
+      lastUnlockAt: now,
+      unlockAttempts: (session.unlockAttempts || 0) + 1
+    });
+    
+    console.log('✅ RTDB updated - ESP32 will detect and unlock');
+  } catch (updateError) {
+    console.error('❌ RTDB update failed:', updateError);
+    throw updateError;
+  }
+  
+  // 4. Return success immediately
+  return {
+    success: true,
+    boxId: scannedBoxId,
+    attemptId: session.attemptId,
+    method: 'qr_scan',
+    requestedAt: now
+  };
+}
+
+/**
+ * Verify an unlock code
  */
 export async function verifyUnlockCode(code) {
   if (!code) return { ok: false };
 
-  // Read all UnlockCodes children once
   const snap = await rGet(rRef(rtdb, 'UnlockCodes'));
   const all = snap.val() || {};
 
-  // Find first match by exact code (case-sensitive) and status pending/successful
   for (const [boxId, node] of Object.entries(all)) {
     if (!node) continue;
     if (node.code === code) {

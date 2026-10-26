@@ -1,11 +1,22 @@
 // src/components/support/ReportToHepModal.jsx
-import { useRef, useState } from 'react';
-import Draggable from 'react-draggable';
+import { useState } from 'react';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '../../services/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { notifyAdmins } from '../../services/notify';
 import { useI18n } from '../../i18n';
+import {
+  ExclamationTriangleIcon,
+  XMarkIcon,
+  UserIcon,
+  IdentificationIcon,
+  EnvelopeIcon,
+  CubeIcon,
+  MapPinIcon,
+  DocumentTextIcon,
+  ArrowPathIcon,
+  PaperAirplaneIcon,
+} from '@heroicons/react/24/outline';
 
 async function waitForAuthUser() {
   if (auth.currentUser) return auth.currentUser;
@@ -45,12 +56,10 @@ export default function ReportToHepModal({ onClose }) {
         setBusy(false);
         return;
       }
-      await u.getIdToken(true); // refresh
+      await u.getIdToken(true);
 
-      // create report
       await addDoc(collection(db, 'Reports'), {
         ...form,
-        
         itemId: form.itemID || null,
         box: form.boxId || null,
         uid: u.uid,
@@ -58,7 +67,6 @@ export default function ReportToHepModal({ onClose }) {
         createdAt: serverTimestamp(),
       });
 
-      // ping admins (best-effort)
       try {
         await notifyAdmins({
           title: 'New HEP report',
@@ -66,12 +74,11 @@ export default function ReportToHepModal({ onClose }) {
           link: '/help',
         });
       } catch (e) {
-        // do not block UX on notification failure
         console.debug('[notifyAdmins] ignored:', e?.message || e);
       }
 
       setMsg(t('help.reportOk', 'Your report has been submitted to HEP.'));
-      setTimeout(() => onClose?.(), 900);
+      setTimeout(() => onClose?.(), 1500);
     } catch (e) {
       console.error('[Report submit] ', e);
       const code = e?.code || '';
@@ -85,60 +92,187 @@ export default function ReportToHepModal({ onClose }) {
     }
   }
 
-  const nodeRef = useRef(null);
-
   return (
-    <div className="fixed inset-0 z-[10000]">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <Draggable nodeRef={nodeRef} handle=".hep-drag-handle" cancel="input,textarea,button,.no-drag">
-        <div
-          ref={nodeRef}
-          className="absolute right-4 md:right-6 top-[56px] w-[min(92vw,34rem)] glass rounded-xl shadow-xl p-5 border"
-          role="dialog" aria-modal="true"
-        >
-          <div className="hep-drag-handle cursor-move flex items-center justify-between mb-3 border-b pb-2">
-            <div className="text-lg font-semibold">{t('help.reportBtn', 'Report to HEP')}</div>
-            <button className="rounded-lg border px-3 py-1 text-sm" onClick={onClose} aria-label={t('common.close','Close')}>✕</button>
+    <div 
+      className="fixed inset-0 z-[10000] flex items-center justify-center p-4"
+      style={{ isolation: 'isolate' }}
+    >
+      {/* Lighter Backdrop with less blur */}
+      <div
+        className="absolute inset-0 bg-slate-900/20 dark:bg-slate-950/40"
+        onClick={onClose}
+        style={{ 
+          backdropFilter: 'blur(4px)',
+          WebkitBackdropFilter: 'blur(4px)'
+        }}
+      />
+
+      {/* Modal - Optimized for performance */}
+      <div
+        className="relative w-full max-w-2xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 animate-scaleIn"
+        role="dialog"
+        aria-modal="true"
+        style={{ 
+          transform: 'translateZ(0)',
+          willChange: 'auto'
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-slate-700">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shadow-lg">
+              <ExclamationTriangleIcon className="w-5 h-5 text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-white">
+              {t('help.reportBtn', 'Report to HEP')}
+            </h2>
           </div>
-
-          <div className="grid gap-3">
-            <div className="grid md:grid-cols-2 gap-3">
-              <input className="px-3 py-2 rounded-lg border dark:bg-slate-800"
-                     placeholder={t('help.fName','Full name')}
-                     value={form.name} onChange={e=>setForm({...form, name:e.target.value})}/>
-              <input className="px-3 py-2 rounded-lg border dark:bg-slate-800"
-                     placeholder={t('help.studentId','Student ID')}
-                     value={form.studentId} onChange={e=>setForm({...form, studentId:e.target.value})}/>
-            </div>
-
-            <input className="px-3 py-2 rounded-lg border dark:bg-slate-800" type="email"
-                   placeholder={t('help.email','Email')}
-                   value={form.email} onChange={e=>setForm({...form, email:e.target.value})}/>
-
-            <div className="grid md:grid-cols-2 gap-3">
-              <input className="px-3 py-2 rounded-lg border dark:bg-slate-800"
-                     placeholder={t('help.itemId','Item ID (if known)')}
-                     value={form.itemID} onChange={e=>setForm({...form, itemID:e.target.value})}/>
-              <input className="px-3 py-2 rounded-lg border dark:bg-slate-800"
-                     placeholder={t('help.boxId','Box ID (if known)')}
-                     value={form.boxId} onChange={e=>setForm({...form, boxId:e.target.value})}/>
-            </div>
-
-            <textarea rows={5} className="px-3 py-2 rounded-lg border dark:bg-slate-800"
-                      placeholder={t('help.desc','Describe the issue (what happened?)')}
-                      value={form.description} onChange={e=>setForm({...form, description:e.target.value})}/>
-
-            {!!msg && <div className="text-sm text-slate-700 dark:text-slate-300">{msg}</div>}
-
-            <div className="flex items-center gap-2">
-              <button className="btn-primary glow-interactive disabled:opacity-60" disabled={busy} onClick={submit}>
-                {busy ? t('common.sending','Sending…') : t('common.submit','Submit')}
-              </button>
-              <button className="rounded-lg border px-4 py-2" onClick={onClose}>{t('common.cancel','Cancel')}</button>
-            </div>
-          </div>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="w-8 h-8 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center justify-center transition-colors disabled:opacity-50"
+            aria-label={t('common.close', 'Close')}
+          >
+            <XMarkIcon className="w-5 h-5 text-slate-500" />
+          </button>
         </div>
-      </Draggable>
+
+        {/* Form */}
+        <div className="p-6 space-y-4 max-h-[calc(100vh-16rem)] overflow-y-auto">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                <UserIcon className="w-4 h-4 inline mr-1" />
+                {t('help.fName', 'Full name')} *
+              </label>
+              <input
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                placeholder="Enter your full name"
+                value={form.name}
+                onChange={e => setForm({ ...form, name: e.target.value })}
+                autoComplete="name"
+                disabled={busy}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                <IdentificationIcon className="w-4 h-4 inline mr-1" />
+                {t('help.studentId', 'Student ID')}
+              </label>
+              <input
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                placeholder="Enter your student ID"
+                value={form.studentId}
+                onChange={e => setForm({ ...form, studentId: e.target.value })}
+                autoComplete="off"
+                disabled={busy}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <EnvelopeIcon className="w-4 h-4 inline mr-1" />
+              {t('help.email', 'Email')} *
+            </label>
+            <input
+              type="email"
+              className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+              placeholder="your.email@example.com"
+              value={form.email}
+              onChange={e => setForm({ ...form, email: e.target.value })}
+              autoComplete="email"
+              disabled={busy}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                <CubeIcon className="w-4 h-4 inline mr-1" />
+                {t('help.itemId', 'Item ID (if known)')}
+              </label>
+              <input
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                placeholder="e.g., item123"
+                value={form.itemID}
+                onChange={e => setForm({ ...form, itemID: e.target.value })}
+                autoComplete="off"
+                disabled={busy}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+                <MapPinIcon className="w-4 h-4 inline mr-1" />
+                {t('help.boxId', 'Box ID (if known)')}
+              </label>
+              <input
+                className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow"
+                placeholder="e.g., box1"
+                value={form.boxId}
+                onChange={e => setForm({ ...form, boxId: e.target.value })}
+                autoComplete="off"
+                disabled={busy}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">
+              <DocumentTextIcon className="w-4 h-4 inline mr-1" />
+              {t('help.desc', 'Describe the issue (what happened?)')} *
+            </label>
+            <textarea
+              rows={5}
+              className="w-full px-4 py-2.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none transition-shadow"
+              placeholder="Please describe the issue in detail..."
+              value={form.description}
+              onChange={e => setForm({ ...form, description: e.target.value })}
+              disabled={busy}
+            />
+          </div>
+
+          {msg && (
+            <div
+              className={`p-3 rounded-lg text-sm animate-fadeIn ${
+                msg.includes('submitted')
+                  ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                  : 'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800'
+              }`}
+            >
+              {msg}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center gap-3 p-6 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 rounded-b-2xl">
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="flex-1 inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-gradient-to-r from-red-600 to-red-600 hover:from-red-700 hover:to-red-700 text-white font-semibold shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {busy ? (
+              <>
+                <ArrowPathIcon className="w-5 h-5 animate-spin" />
+                {t('common.sending', 'Sending...')}
+              </>
+            ) : (
+              <>
+                <PaperAirplaneIcon className="w-5 h-5" />
+                {t('common.submit', 'Submit')}
+              </>
+            )}
+          </button>
+          <button
+            onClick={onClose}
+            disabled={busy}
+            className="px-6 py-3 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium transition-colors disabled:opacity-50"
+          >
+            {t('common.cancel', 'Cancel')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
