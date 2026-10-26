@@ -1,0 +1,180 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* -------- helpers -------- */
+    function signedIn() { return request.auth != null; }
+    function isSelf(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() {
+      return signedIn() &&
+        get(/databases/$(database)/documents/Users/$(request.auth.uid)).data.role == "admin";
+    }
+    function isAnon() { return signedIn() && request.auth.token.firebase.sign_in_provider == "anonymous"; }
+    function isDevice() { return signedIn() && request.auth.token.email == "info.itemcloud@gmail.com"; }
+
+    function isString(x) { return x is string && x.size() > 0; }
+    function isUrl(x) { return isString(x) && x.matches('^https?://.*'); }
+    function isTs(x) { return x is timestamp; }
+    function hasItemID(d) { return d.itemID is string && d.itemID.size() > 0; }
+
+    // When a device first posts a found item
+    function lostItemShapeCreate() {
+      return isString(request.resource.data.box) &&
+             isString(request.resource.data.itemID) &&
+             isUrl(request.resource.data.imageUrl) &&
+             isTs(request.resource.data.createdAt) &&
+             request.resource.data.status == "lost";
+    }
+
+    /* -------- Users -------- */
+    match /Users/{uid} {
+      allow read, update: if isSelf(uid) || isAdmin();
+      allow create: if (isSelf(uid) && request.resource.data.matricUrl is string) || isAdmin();
+      allow delete: if isAdmin();
+
+      match /settings/{doc} {
+        allow read, write: if isSelf(uid) || isAdmin();
+      }
+    }
+
+    /* -------- LostItems (allow ESP32-CAM anonymous snapshots) -------- */
+    match /LostItems/{id} {
+      allow read: if true;
+      allow create: if (isAnon() || isAdmin()) && lostItemShapeCreate();
+      allow update: if
+        isAdmin() ||
+        (
+          (isAnon() || isDevice()) &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['imageUrl','updatedAt','lastCaptureAt']) &&
+          request.resource.data.box == resource.data.box &&
+          request.resource.data.itemID == resource.data.itemID &&
+          request.resource.data.createdAt == resource.data.createdAt &&
+          request.resource.data.status == resource.data.status &&
+          isUrl(request.resource.data.imageUrl) &&
+          (!('updatedAt' in request.resource.data) || isTs(request.resource.data.updatedAt)) &&
+          (!('lastCaptureAt' in request.resource.data) || isTs(request.resource.data.lastCaptureAt))
+        )
+        ||
+        (
+          signedIn() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly(['status','claimId','claimedAt','updatedAt']) &&
+          resource.data.status != 'claimed' &&
+          request.resource.data.status == 'claimed' &&
+          (request.resource.data.claimId is string) &&
+          exists(/databases/$(database)/documents/Claim/$(request.resource.data.claimId)) &&
+          get(/databases/$(database)/documents/Claim/$(request.resource.data.claimId)).data.itemID == resource.data.itemID &&
+          (request.resource.data.claimedAt is timestamp) && 
+          (request.resource.data.updatedAt is timestamp)
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    /* -------- AllClaims: all attempts live here (website owns creation) -------- */
+    match /AllClaims/{id} {
+      allow read: if isAdmin() || isDevice() || (signedIn() && resource.data.uid == request.auth.uid);
+
+      allow create: if (signedIn() || isDevice())
+        && request.resource.data.status == 'pending'
+        && hasItemID(request.resource.data)
+        && isString(request.resource.data.box);
+
+      allow update: if (signedIn() || isDevice())
+        && request.resource.data.diff(resource.data).changedKeys()
+             .hasOnly(['status','updatedAt','reason','code','expiresAtMs','claimRef',
+                       'unlockMethod','unlockedAt','unlockDuration','qrScannedAt',
+                       'doorOpenedAt','claimCompletedAt'])
+        && request.resource.data.status in ['pending','successful','cancelled','expired'];
+
+      allow delete: if false;
+    }
+
+    /* -------- Claim: only for successful ones -------- */
+    function allClaimIsSuccessfulOwned(id) {
+      let a = get(/databases/$(database)/documents/AllClaims/$(id));
+      return a.exists()
+          && a.data.status == 'successful'
+          && (isAdmin() || isDevice() || (signedIn() && a.data.uid == request.auth.uid));
+    }
+    
+    match /Claim/{cid} {
+      allow read: if isAdmin() || isDevice() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && (request.resource.data.attemptId is string)
+        && (request.resource.data.status == 'successful')
+        && exists(/databases/$(database)/documents/AllClaims/$(request.resource.data.attemptId))
+        && get(/databases/$(database)/documents/AllClaims/$(request.resource.data.attemptId)).data.status == 'successful'
+        && get(/databases/$(database)/documents/AllClaims/$(request.resource.data.attemptId)).data.uid == request.auth.uid
+        && request.resource.data.itemID == get(/databases/$(database)/documents/AllClaims/$(request.resource.data.attemptId)).data.itemID
+        && request.resource.data.box    == get(/databases/$(database)/documents/AllClaims/$(request.resource.data.attemptId)).data.box;
+      allow update, delete: if false;
+    }
+
+    /* -------- Counters (for sequential C0001 IDs) -------- */
+    match /counters/{name} {
+      allow read: if true;
+      
+      allow update: if
+        name == "item" &&
+        (isAnon() || isAdmin()) &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['n']) &&
+        request.resource.data.n == resource.data.n + 1;
+
+      allow update: if
+        name == "claim" &&
+        signedIn() &&
+        request.resource.data.diff(resource.data).changedKeys().hasOnly(['n']) &&
+        request.resource.data.n == resource.data.n + 1;
+
+      allow create: if isAdmin();
+      allow delete: if false;
+    }
+
+    /* -------- Notifications (per-user) - FIXED -------- */
+    match /Notifications/{uid}/items/{id} {
+      // Users can read, update, and DELETE their own notifications
+      allow read, update, delete: if isSelf(uid);
+      
+      // Users and admins can create notifications
+      allow create: if isSelf(uid) || isAdmin();
+    }
+
+    /* -------- Box & others -------- */
+    match /Box/{id} {
+      allow read: if true;
+      allow create, update: if isAdmin();
+      allow delete: if false;
+
+      match /ItemHistory/{item} {
+        allow read: if true;
+        allow create, update: if isAdmin();
+        allow delete: if false;
+      }
+    }
+
+    match /Announcements/{id} { 
+      allow read: if true; 
+      allow create, update: if isAdmin(); 
+      allow delete: if false; 
+    }
+
+    match /Reports/{id} {
+      allow create: if signedIn();
+      allow read: if isAdmin() || isSelf(resource.data.uid);
+      allow update: if isAdmin() &&
+        request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(['status','adminDraft','updatedAt','lastUpdatedBy','forwardedAt','forwardedBy','forwardCount']);
+      allow delete: if isAdmin();
+    }
+
+    match /EditRequests/{id} { 
+      allow create: if signedIn(); 
+      allow read, update, delete: if isAdmin(); 
+    }
+    
+    match /AdminActions/{id} { 
+      allow create, read: if isAdmin(); 
+      allow update, delete: if false; 
+    }
+  }
+}

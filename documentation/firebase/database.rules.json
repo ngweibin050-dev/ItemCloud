@@ -1,0 +1,100 @@
+{
+  "rules": {
+    /* ================================
+       AUTH HELPERS (RTDB)
+       ================================ */
+    "users": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && (auth.uid === $uid || auth.token.email === 'info.itemcloud@gmail.com')"
+      }
+    },
+
+    /* ================================
+       UNLOCK (public device pathways)
+       ================================ */
+    "unlock": {
+      "$boxId": {
+        "codes": {
+          ".read": "auth != null && auth.token.firebase.sign_in_provider == 'anonymous'",
+          ".write": "auth != null && auth.token.firebase.sign_in_provider == 'anonymous'"
+        },
+        "userViews": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid",
+            ".write": false
+          }
+        },
+        "window": {
+          ".read": "auth != null",
+          ".write": "auth != null"
+        }
+      }
+    },
+
+    /* ================================
+       BOXES (device status channel)
+       ================================ */
+    "boxes": {
+      "$boxId": {
+        "cmd": {
+          ".read": "auth != null && auth.token.firebase.sign_in_provider == 'anonymous'",
+          ".write": false
+        },
+        "status": {
+          ".read": true,
+          ".write": "auth != null && auth.token.email === 'info.itemcloud@gmail.com'"
+        }
+      }
+    },
+
+    /* ================================
+       UNLOCK CODES (website + device)
+       /UnlockCodes/box1 { attemptId, itemID, boxId, code, status, byUid, ... }
+       ================================ */
+    "UnlockCodes": {
+  "$boxId": {
+    ".read": "auth != null",
+
+    ".write":
+      "auth != null && ( auth.token.email === 'info.itemcloud@gmail.com' || ( newData.child('byUid').val() === auth.uid && ( newData.child('status').val() == 'pending' || newData.child('status').val() == 'cancelled' || newData.child('status').val() == 'expired' || newData.child('status').val() == 'successful' ) ) )",
+
+    "attemptId":   { ".validate": "newData.isString() && newData.val().matches(/^C\\d{4,}$/)" },
+    "code":        { ".validate": "newData.isString() && newData.val().matches(/^[0-9A-D]{8}$/)" },
+    "byUid":       { ".validate": "newData.isString()" },
+    "boxId":       { ".validate": "newData.isString()" },
+    "itemID":      { ".validate": "newData.isString()" },
+    "status":      { ".validate": "newData.isString() && newData.val().matches(/^(pending|cancelled|expired|successful|ready|locked)$/)" },
+    "startedAtMs": { ".validate": "newData.isNumber()" },
+    "expiresAtMs": { ".validate": "newData.isNumber()" },
+    "expiredAtMs": { ".validate": "(!newData.exists()) || newData.isNumber()" },
+    "cancelledAtMs": { ".validate": "(!newData.exists()) || newData.isNumber()" },
+    "liveInput":     { ".validate": "(!newData.exists()) || newData.isString()" },
+    "liveInputAtMs": { ".validate": "(!newData.exists()) || newData.isNumber()" },
+    
+    "unlockRequest": {
+      ".validate": "(!newData.exists()) || newData.hasChildren(['method','requestedAt','triggered','processedAt'])",
+      "method": { ".validate": "newData.isString()" },
+      "requestedAt": { ".validate": "newData.isNumber()" },
+      "triggered": { ".validate": "newData.isBoolean()" },
+      "processedAt": { ".validate": "newData.isNumber()" }
+    },
+    "lastUnlockMethod": { ".validate": "(!newData.exists()) || newData.isString()" },
+    "lastUnlockAt": { ".validate": "(!newData.exists()) || newData.isNumber()" },
+    "unlockAttempts": { ".validate": "(!newData.exists()) || newData.isNumber()" }
+  }
+},
+
+    /* ================================
+       ADMIN OVERRIDE CHANNEL
+       Web app (admin) writes here, ESP32 reads.
+       ================================ */
+    "unlockOverride": {
+      "$boxId": {
+        ".read":  "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'info.itemcloud@gmail.com')",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'admin' || auth.token.email === 'info.itemcloud@gmail.com')",
+        ".validate": "!newData.exists() || (newData.hasChildren(['atMs','seconds']) && newData.child('atMs').isNumber() && newData.child('seconds').isNumber() && newData.child('seconds').val() >= 1 && newData.child('seconds').val() <= 30)"
+      }
+    }
+  }
+}
