@@ -93,9 +93,10 @@ src/
   components/     item cards, unlock modal, QR scanner, charts/
   services/       Firestore, Realtime Database, claims, notifications, admin
 functions/        Cloud Functions: claim finalisation, code expiry
-firmware/         ESP32 central controller and ESP32-CAM sketches
-firebase/         Firestore rules, Realtime Database rules, index definitions
-docs/             circuit diagram
+documentation/
+  firmware/         ESP32 central controller and ESP32-CAM sketches
+  firebase/         Firestore rules, Realtime Database rules, index definitions
+  docs/             circuit diagram
 ```
 
 ## Run it locally
