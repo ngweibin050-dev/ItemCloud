@@ -6,15 +6,19 @@ import { getDatabase } from 'firebase/database';
 // If you later enable App Check, you can import/initialize it here.
 
 const firebaseConfig = {
-  apiKey: 'AIzaSyApm49AWMB2uQx1n_h0TBrQ1XEAx3va9_s',
-  authDomain: 'itemcloud-9a47f.firebaseapp.com',
-  projectId: 'itemcloud-9a47f',
-  storageBucket: 'itemcloud-9a47f.appspot.com',
-  messagingSenderId: '557606501225',
-  appId: '1:557606501225:web:440ae3a1ad9772eb305bf8',
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_MESSENGING_SENDER_ID,
+  appId: import.meta.env.VITE_APP_ID,
   databaseURL:
-    'https://itemcloud-9a47f-default-rtdb.asia-southeast1.firebasedatabase.app',
+    import.meta.env.VITE_DATABASE_URL,
 };
+
+if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+  throw new Error('Firebase config missing: copy .env.example to .env.local and fill in the VITE_FIREBASE_* values.');
+}
 
 const app = initializeApp(firebaseConfig);
 
